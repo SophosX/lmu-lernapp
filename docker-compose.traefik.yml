@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  app:
+    image: ghcr.io/alexanderfesl/lmu-lernapp:latest
+    container_name: lmu-lernapp
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=8787
+    volumes:
+      - app-data:/app/data-store
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.lmu-lernapp.rule=Host(`${LERNAPP_DOMAIN:-lernen.localhost}`)"
+      - "traefik.http.routers.lmu-lernapp.entrypoints=websecure"
+      - "traefik.http.routers.lmu-lernapp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.lmu-lernapp.loadbalancer.server.port=8787"
+      # Optional: Basic Auth
+      # - "traefik.http.middlewares.lmu-lernapp-auth.basicauth.users=admin:$$apr1$$H6uskkkW$$IgXLP6ewTrSuBkTrqE8wj/"
+      # - "traefik.http.routers.lmu-lernapp.middlewares=lmu-lernapp-auth"
+
+volumes:
+  app-data:
+
+networks:
+  traefik:
+    external: true

@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    container_name: lmu-lernapp
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=8787
+    volumes:
+      - app-data:/app/data-store
+    networks:
+      - app-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: lmu-lernapp-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - certbot-data:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    depends_on:
+      - app
+    networks:
+      - app-network
+
+  certbot:
+    image: certbot/certbot
+    container_name: lmu-lernapp-certbot
+    volumes:
+      - certbot-data:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - app-network
+
+volumes:
+  app-data:
+  certbot-data:
+  certbot-www:
+
+networks:
+  app-network:
+    driver: bridge

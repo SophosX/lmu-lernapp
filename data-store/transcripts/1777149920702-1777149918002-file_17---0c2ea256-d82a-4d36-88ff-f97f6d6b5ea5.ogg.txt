@@ -1,0 +1,1 @@
+Du kannst ja auch in deine Heartbeat-MD immer dann dafür sorgen, dass du den Kalender abrufst, beziehungsweise eigentlich ihren großen Job einmal pro Tag. Dann weißt du immer quasi Bescheid, was an diesem Tag beziehungsweise an den nächsten Tagen los ist, wenn du den Kalender abrufst.
