@@ -1,0 +1,10 @@
+node_modules/
+*.log
+.DS_Store
+.env
+.env.local
+*.tar.gz
+data-store/uploads/
+data-store/library.json
+data-store/tutor-sessions.json
+*.tsbuildinfo
