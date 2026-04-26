@@ -94,3 +94,4 @@ In Hostinger DNS:
 - Updates: `./deploy.sh` erneut ausführen — Daten bleiben erhalten.
 - Logs einsehen: `docker compose logs -f app`
 - App stoppen: `docker compose down`
+# Deployment ready
