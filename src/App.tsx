@@ -1,6 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
-import { subjects as initialSubjects, uploadTypes, type ContentItem, type ContentKind, type Subject, type ProgressState } from './data/learningPlan'
-import { buildEvidenceFromTutorSession, buildReviewQueue, deriveAssessment, pickRecommendedContent, type EvidencePoint, type ReviewQueueEntry } from './tutorAlgorithm'
+import {
+  LayoutDashboard, BookOpen, GraduationCap, FolderOpen, Upload,
+  CheckCircle2, AlertCircle, Target, ArrowRight, Sparkles, Clock,
+  FileText, Mic, StickyNote, Globe, Link as LinkIcon,
+} from 'lucide-react'
+import {
+  subjects as initialSubjects, type ContentItem, type ContentKind,
+  type Subject, type ProgressState,
+} from './data/learningPlan'
+import {
+  buildEvidenceFromTutorSession, buildReviewQueue, deriveAssessment,
+  pickRecommendedContent, type EvidencePoint, type ReviewQueueEntry,
+} from './tutorAlgorithm'
+
+// ============================================================
+// Constants & types
+// ============================================================
 
 const progressTone: Record<ProgressState, string> = {
   'Nicht erhoben': 'badge-muted',
@@ -19,7 +34,9 @@ const statusOrder: Record<ProgressState, number> = {
 }
 
 const allKinds: ContentKind[] = ['PDF', 'Audio', 'Notiz', 'Seite', 'Link']
-const API_BASE = (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8787')
+const API_BASE = typeof window !== 'undefined'
+  ? `${window.location.protocol}//${window.location.host}`
+  : 'http://localhost:8787'
 
 type ApiLibraryItem = {
   id: string
@@ -52,6 +69,27 @@ type TutorSessionEntry = {
 
 type ViewType = 'dashboard' | 'topics' | 'tutor' | 'library' | 'upload'
 
+const KindIconMap: Record<ContentKind, typeof FileText> = {
+  PDF: FileText,
+  Audio: Mic,
+  Notiz: StickyNote,
+  Seite: Globe,
+  Link: LinkIcon,
+}
+
+function KindIcon({ kind }: { kind: ContentKind }) {
+  const Icon = KindIconMap[kind]
+  return (
+    <span className={`kind-icon kind-${kind}`} title={kind}>
+      <Icon size={11} strokeWidth={2.4} />
+    </span>
+  )
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+
 function mergeUploadedItems(base: Subject[], uploadedItems: ApiLibraryItem[]): Subject[] {
   if (uploadedItems.length === 0) return base
   return base.map((subject) => {
@@ -63,417 +101,605 @@ function mergeUploadedItems(base: Subject[], uploadedItems: ApiLibraryItem[]): S
         title: item.title,
         kind: item.kind,
         source: item.source,
-        note: [item.note, item.processingStatus ? `Status: ${item.processingStatus}` : null, item.localPath ? `Pfad: ${item.localPath}` : null]
-          .filter(Boolean).join(' • ') || 'Upload über Weboberfläche',
+        note: [
+          item.note,
+          item.processingStatus ? `Status: ${item.processingStatus}` : null,
+          item.localPath ? `Pfad: ${item.localPath}` : null,
+        ].filter(Boolean).join(' • ') || 'Upload über Weboberfläche',
       }
-      const existing = groups.find((group) => group.title.toLowerCase() === item.groupTitle.toLowerCase())
+      const existing = groups.find((g) => g.title.toLowerCase() === item.groupTitle.toLowerCase())
       if (existing) {
-        const alreadyThere = existing.items.some((existingItem) => existingItem.title === mapped.title && existingItem.kind === mapped.kind && existingItem.note === mapped.note)
-        if (!alreadyThere) existing.items.unshift(mapped)
+        const dup = existing.items.some((e) => e.title === mapped.title && e.kind === mapped.kind && e.note === mapped.note)
+        if (!dup) existing.items.unshift(mapped)
       } else {
-        groups.unshift({ title: item.groupTitle, summary: 'Themengebiet aus Import oder Upload übernommen.', items: [mapped] })
+        groups.unshift({
+          title: item.groupTitle,
+          summary: 'Themengebiet aus Import oder Upload übernommen.',
+          items: [mapped],
+        })
       }
     }
     return { ...subject, groups }
   })
 }
 
-function Sidebar({ subjects, selectedId, onSelect, view, onViewChange }: {
+function progressPct(subject: Subject): number {
+  if (subject.topics.length === 0) return 0
+  const sum = subject.topics.reduce((acc, t) => acc + statusOrder[t.status], 0)
+  return Math.round((sum / (subject.topics.length * 4)) * 100)
+}
+
+function buildTutorPrompts(title: string) {
+  return [
+    `Erkläre „${title}“ in eigenen Worten, als würdest du es einem Kommilitonen kurz vor der Prüfung erklären.`,
+    `Welche typische Fehlentscheidung droht bei „${title}“, wenn man nur auswendig gelernt hat?`,
+    `Nenne den nächsten Fall oder die offene Frage, mit der wir „${title}“ prüfungsnah abtesten sollten.`,
+  ]
+}
+
+function relativeTime(iso: string | null): string {
+  if (!iso) return '—'
+  const now = Date.now()
+  const t = new Date(iso).getTime()
+  const diff = (now - t) / 1000
+  if (diff < 60) return 'gerade'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`
+  return `${Math.floor(diff / 86400)}d`
+}
+
+// ============================================================
+// Sidebar
+// ============================================================
+
+function Sidebar({
+  subjects, selectedId, view, onSelectSubject, onViewChange,
+}: {
   subjects: Subject[]
   selectedId: string
-  onSelect: (id: string) => void
   view: ViewType
+  onSelectSubject: (id: string) => void
   onViewChange: (v: ViewType) => void
 }) {
-  const selected = subjects.find((s) => s.id === selectedId) ?? subjects[0]
-  const overallProgress = Math.round(
-    (subjects.flatMap((s) => s.topics).filter((t) => statusOrder[t.status] >= 3).length /
-      Math.max(1, subjects.flatMap((s) => s.topics).length)) * 100
-  )
+  const allTopics = subjects.flatMap((s) => s.topics)
+  const overall = allTopics.length > 0
+    ? Math.round((allTopics.reduce((a, t) => a + statusOrder[t.status], 0) / (allTopics.length * 4)) * 100)
+    : 0
+
+  const navItems: Array<[ViewType, string, typeof LayoutDashboard]> = [
+    ['dashboard', 'Dashboard', LayoutDashboard],
+    ['topics', 'Themen', BookOpen],
+    ['tutor', 'Tutor', GraduationCap],
+    ['library', 'Bibliothek', FolderOpen],
+    ['upload', 'Upload', Upload],
+  ]
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-logo">📚 LMU Lernapp</div>
-      
-      <div className="sidebar-section">
-        <div className="sidebar-section-title">Navigation</div>
-        <button className={`sidebar-item ${view === 'dashboard' ? 'active' : ''}`} onClick={() => onViewChange('dashboard')}>
-          📊 Dashboard
-        </button>
-        <button className={`sidebar-item ${view === 'topics' ? 'active' : ''}`} onClick={() => onViewChange('topics')}>
-          📖 Themen
-        </button>
-        <button className={`sidebar-item ${view === 'tutor' ? 'active' : ''}`} onClick={() => onViewChange('tutor')}>
-          🎓 Tutor
-        </button>
-        <button className={`sidebar-item ${view === 'library' ? 'active' : ''}`} onClick={() => onViewChange('library')}>
-          📁 Bibliothek
-        </button>
-        <button className={`sidebar-item ${view === 'upload' ? 'active' : ''}`} onClick={() => onViewChange('upload')}>
-          ⬆️ Upload
-        </button>
+      <div className="sidebar-brand">
+        <div className="sidebar-brand-icon">L</div>
+        <div className="sidebar-brand-text">Lernapp</div>
       </div>
 
       <div className="sidebar-section">
-        <div className="sidebar-section-title">Fächer</div>
-        {subjects.map((subject) => (
+        {navItems.map(([key, label, Icon]) => (
           <button
-            key={subject.id}
-            className={`sidebar-item ${subject.id === selectedId ? 'active' : ''}`}
-            onClick={() => { onSelect(subject.id); onViewChange('topics') }}
+            key={key}
+            className={`sidebar-item ${view === key ? 'active' : ''}`}
+            onClick={() => onViewChange(key)}
           >
-            <span className={`sidebar-item-status status-${statusOrder[subject.status]}`} />
-            {subject.title}
+            <span className="sidebar-item-icon"><Icon size={15} strokeWidth={1.8} /></span>
+            {label}
           </button>
         ))}
       </div>
 
-      <div className="sidebar-progress">
-        <div className="progress-label">Gesamtfortschritt: {overallProgress}%</div>
-        <div className="progress-bar">
-          <div className="progress-fill" style={{ width: `${overallProgress}%` }} />
+      <div className="sidebar-section">
+        <div className="sidebar-section-label">Fächer</div>
+        {subjects.map((subject) => (
+          <button
+            key={subject.id}
+            className={`sidebar-item ${subject.id === selectedId && (view === 'topics' || view === 'tutor' || view === 'library' || view === 'upload') ? 'active' : ''}`}
+            onClick={() => { onSelectSubject(subject.id); onViewChange('topics') }}
+          >
+            <span className={`sidebar-item-dot dot-${statusOrder[subject.status]}`} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{subject.title}</span>
+            <span className="sidebar-item-count">{subject.topics.length}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="sidebar-footer">
+        <div className="sidebar-progress-row">
+          <span className="sidebar-progress-label">Gesamt</span>
+          <span className="sidebar-progress-value">{overall}%</span>
+        </div>
+        <div className="sidebar-progress-bar">
+          <div className="sidebar-progress-fill" style={{ width: `${overall}%` }} />
         </div>
       </div>
     </aside>
   )
 }
 
-function Header({ apiStatus, title }: { apiStatus: string; title: string }) {
+// ============================================================
+// Header
+// ============================================================
+
+function Header({ crumbs, apiStatus }: {
+  crumbs: Array<{ label: string; current?: boolean }>
+  apiStatus: 'unknown' | 'online' | 'offline'
+}) {
   return (
     <header className="header">
-      <h1 className="header-title">{title}</h1>
-      <div className="header-meta">
-        <span className={`api-badge ${apiStatus}`}>
-          {apiStatus === 'online' ? '🟢' : apiStatus === 'offline' ? '🔴' : '⚪'} API {apiStatus}
+      <div className="header-breadcrumb">
+        {crumbs.map((c, i) => (
+          <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {i > 0 && <span className="header-breadcrumb-sep">/</span>}
+            <span className={c.current ? 'header-breadcrumb-current' : ''}>{c.label}</span>
+          </span>
+        ))}
+      </div>
+      <div className="header-actions">
+        <span className={`api-status ${apiStatus}`}>
+          <span className="api-status-dot" />
+          {apiStatus === 'online' ? 'Live' : apiStatus === 'offline' ? 'Offline' : 'Verbinden…'}
         </span>
       </div>
     </header>
   )
 }
 
-function DashboardView({ subjects, reviewQueue, onNavigate }: {
-  subjects: Subject[]
-  reviewQueue: ReviewQueueEntry[]
-  onNavigate: (view: ViewType, subjectId?: string, topicTitle?: string) => void
-}) {
-  return (
-    <div className="content-container animate-fade-in">
-      <div className="section-header">
-        <h2 className="section-title">Dashboard</h2>
-        <p className="section-description">Dein Lernfortschritt auf einen Blick</p>
-      </div>
+// ============================================================
+// Dashboard
+// ============================================================
 
-      <div className="grid-3" style={{ marginBottom: 32 }}>
-        {subjects.map((subject) => (
-          <div key={subject.id} className="card" onClick={() => onNavigate('topics', subject.id)} style={{ cursor: 'pointer' }}>
-            <div className="card-header">
-              <div>
-                <div className="card-title">{subject.title}</div>
-                <div className="card-subtitle">{subject.subtitle}</div>
-              </div>
-              <span className={`badge ${progressTone[subject.status]}`}>{subject.status}</span>
-            </div>
-            <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: 16 }}>{subject.description}</p>
-            <div style={{ display: 'flex', gap: 16, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              <span>{subject.topics.length} Themen</span>
-              <span>Confidence: {subject.confidence}</span>
-            </div>
-          </div>
-        ))}
-      </div>
+// ============================================================
+// Topics View
+// ============================================================
 
-      <div className="section-header">
-        <h2 className="section-title">🔥 Nächste Session</h2>
-        <p className="section-description">Priorisiert nach Lernstand und Wiedervorlage</p>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {reviewQueue.slice(0, 5).map((entry) => (
-          <button
-            key={entry.id}
-            className="queue-card"
-            onClick={() => onNavigate('tutor', entry.subjectId, entry.topicTitle)}
-          >
-            <div className="queue-header">
-              <span className="queue-title">{entry.topicTitle}</span>
-              <span className={`badge ${progressTone[entry.state]}`}>{entry.state}</span>
-            </div>
-            <div className="queue-meta">
-              <span>{entry.subjectTitle}</span>
-              <span>•</span>
-              <span>Priorität {entry.priority}</span>
-              <span>•</span>
-              <span>Wiedervorlage: {entry.reviewLabel}</span>
-            </div>
-            <p className="queue-reason">{entry.reason}</p>
-            {entry.recommendedSource && <p className="queue-source">📖 {entry.recommendedSource}</p>}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function TopicsView({ subject, selectedTopic, onSelectTopic }: {
+function TopicsView({ subject, selectedTopicTitle, onSelectTopic, onOpenTutor }: {
   subject: Subject
-  selectedTopic: string | null
+  selectedTopicTitle: string | null
   onSelectTopic: (title: string) => void
+  onOpenTutor: (topicTitle: string) => void
 }) {
+  const selectedTopic = subject.topics.find((t) => t.title === selectedTopicTitle) ?? subject.topics[0] ?? null
+  const pct = progressPct(subject)
+
   return (
-    <div className="content-container animate-fade-in">
-      <div className="section-header">
-        <h2 className="section-title">{subject.title}</h2>
-        <p className="section-description">{subject.description}</p>
-      </div>
-
-      <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
-        <span className={`badge ${progressTone[subject.status]}`}>{subject.status}</span>
-        <span className="badge badge-muted">Confidence: {subject.confidence}</span>
-        <span className="badge badge-muted">{subject.topics.length} Themen</span>
-      </div>
-
-      <div className="grid-2">
-        {subject.topics.map((topic) => (
-          <button
-            key={topic.title}
-            className={`topic-card ${selectedTopic === topic.title ? 'active' : ''}`}
-            onClick={() => onSelectTopic(topic.title)}
-          >
-            <div className="topic-card-header">
-              <span className="topic-card-title">{topic.title}</span>
-              <span className={`badge ${progressTone[topic.status]}`}>{topic.status}</span>
-            </div>
-            <p className="topic-card-evidence">{topic.evidence}</p>
-            <p className="topic-card-next">→ {topic.nextStep}</p>
-          </button>
-        ))}
-      </div>
-
-      {selectedTopic && (
-        <div style={{ marginTop: 32 }}>
-          <div className="section-header">
-            <h3 className="section-title">Inhalte zu diesem Thema</h3>
-          </div>
-          <div className="content-grid">
-            {subject.groups.flatMap((group) =>
-              group.items.map((item) => (
-                <div key={`${group.title}-${item.title}`} className="content-card">
-                  <div className="content-card-header">
-                    <span className="content-card-title">{item.title}</span>
-                    <span className="badge badge-muted">{item.kind}</span>
-                  </div>
-                  <p className="content-card-meta">{group.title} • {item.source}</p>
-                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 8 }}>{item.note}</p>
-                </div>
-              ))
-            )}
-          </div>
+    <div className="content-wide fade-in">
+      <div className="page-header">
+        <div className="page-eyebrow">{subject.subtitle}</div>
+        <h1 className="page-title">{subject.title}</h1>
+        <p className="page-description">{subject.description}</p>
+        <div className="page-meta">
+          <span className={`badge ${progressTone[subject.status]}`}>{subject.status}</span>
+          <span className="text-tertiary text-mono" style={{ fontSize: 12 }}>{subject.topics.length} Themen · {pct}% Fortschritt</span>
         </div>
-      )}
+      </div>
+
+      <div className="topics-layout">
+        <div className="topics-list">
+          {subject.topics.map((topic) => (
+            <button
+              key={topic.title}
+              className={`topic-item ${selectedTopic?.title === topic.title ? 'active' : ''}`}
+              onClick={() => onSelectTopic(topic.title)}
+            >
+              <div className="topic-item-head">
+                <span className="topic-item-title">{topic.title}</span>
+                <span className={`badge ${progressTone[topic.status]}`}>{topic.status}</span>
+              </div>
+              <div className="topic-item-evidence">{topic.evidence}</div>
+            </button>
+          ))}
+        </div>
+
+        {selectedTopic ? (
+          <div className="topic-detail">
+            <div className="topic-detail-head">
+              <h2 className="topic-detail-title">{selectedTopic.title}</h2>
+              <div className="topic-detail-meta">
+                <span className={`badge ${progressTone[selectedTopic.status]}`}>{selectedTopic.status}</span>
+              </div>
+              <div className="topic-detail-row">
+                <div className="topic-detail-key">Evidenz</div>
+                <div className="topic-detail-value">{selectedTopic.evidence}</div>
+              </div>
+              <div className="topic-detail-row">
+                <div className="topic-detail-key">Nächster Schritt</div>
+                <div className="topic-detail-value">{selectedTopic.nextStep}</div>
+              </div>
+              <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary" onClick={() => onOpenTutor(selectedTopic.title)}>
+                  <GraduationCap size={14} /> Tutor starten
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div className="section-head" style={{ marginBottom: 8 }}>
+                <h3 className="section-title">Verknüpfte Inhalte</h3>
+                <span className="section-action">aus allen Gruppen dieses Fachs</span>
+              </div>
+              <div className="content-grid">
+                {subject.groups.flatMap((g) => g.items.slice(0, 3).map((item) => (
+                  <div key={`${g.title}-${item.title}-${item.kind}`} className="content-item">
+                    <div className="content-item-head">
+                      <span className="content-item-title">{item.title}</span>
+                      <KindIcon kind={item.kind} />
+                    </div>
+                    <span className="content-item-source">{g.title} · {item.source}</span>
+                    <p className="content-item-note">{item.note}</p>
+                  </div>
+                )))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="empty">
+            <div className="empty-icon"><BookOpen size={16} /></div>
+            <div className="empty-title">Keine Themen</div>
+            <div className="empty-description">Dieses Fach hat noch keine Themen — starte mit einem Upload.</div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
-function TutorView({ subject, topic, tutorHistory, allSessions, onSubmit }: {
+function DashboardView({ subjects, queue, sessions, onOpen }: {
+  subjects: Subject[]
+  queue: ReviewQueueEntry[]
+  sessions: TutorSessionEntry[]
+  onOpen: (view: ViewType, subjectId?: string, topicTitle?: string) => void
+}) {
+  const allTopics = subjects.flatMap((s) => s.topics)
+  const stats = {
+    subjects: subjects.length,
+    topics: allTopics.length,
+    inProgress: allTopics.filter((t) => statusOrder[t.status] >= 1 && statusOrder[t.status] <= 2).length,
+    sessions: sessions.length,
+  }
+
+  return (
+    <div className="content fade-in">
+      <div className="page-header">
+        <div className="page-eyebrow">Übersicht</div>
+        <h1 className="page-title">Lernfortschritt</h1>
+        <p className="page-description">Dein aktueller Stand über alle Fächer und die nächsten priorisierten Schritte.</p>
+      </div>
+
+      <div className="stat-grid">
+        <div className="stat"><div className="stat-label">Fächer</div><div className="stat-value">{stats.subjects}</div></div>
+        <div className="stat"><div className="stat-label">Themen</div><div className="stat-value">{stats.topics}</div></div>
+        <div className="stat"><div className="stat-label">In Bearbeitung</div><div className="stat-value">{stats.inProgress}</div></div>
+        <div className="stat"><div className="stat-label">Tutor-Sessions</div><div className="stat-value">{stats.sessions}</div></div>
+      </div>
+
+      <div className="section" style={{ marginTop: 0 }}>
+        <div className="section-head">
+          <h2 className="section-title">Fächer</h2>
+          <span className="section-action">{subjects.length} aktiv</span>
+        </div>
+        <div className="subject-grid">
+          {subjects.map((subject) => {
+            const pct = progressPct(subject)
+            return (
+              <button key={subject.id} className="subject-card" onClick={() => onOpen('topics', subject.id)}>
+                <div className="subject-card-head">
+                  <div>
+                    <div className="subject-card-title">{subject.title}</div>
+                    <div className="subject-card-subtitle">{subject.subtitle}</div>
+                  </div>
+                  <span className={`badge ${progressTone[subject.status]}`}>{subject.status}</span>
+                </div>
+                <div className="subject-card-progress">
+                  <div className="mini-bar"><div className="mini-bar-fill" style={{ width: `${pct}%` }} /></div>
+                  <span className="mini-bar-value">{pct}%</span>
+                </div>
+                <div className="subject-card-foot">
+                  <span>{subject.topics.length} Themen</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>Öffnen <ArrowRight size={11} /></span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="section">
+        <div className="section-head">
+          <h2 className="section-title">Nächste Session</h2>
+          <span className="section-action">Priorisiert nach Lernstand</span>
+        </div>
+        {queue.length > 0 ? (
+          <div className="queue">
+            {queue.slice(0, 6).map((entry, i) => (
+              <button key={`${entry.subjectId}-${entry.topicTitle}`} className="queue-row" onClick={() => onOpen('tutor', entry.subjectId, entry.topicTitle)}>
+                <span className="queue-priority">{String(i + 1).padStart(2, '0')}</span>
+                <div className="queue-content">
+                  <div className="queue-topic">{entry.topicTitle}</div>
+                  <div className="queue-context">{entry.subjectTitle} · {entry.reason || 'Wiedervorlage fällig'}</div>
+                </div>
+                <span className={`badge ${progressTone[entry.state]}`}>{entry.state}</span>
+                <span className="queue-when">{entry.latestSessionAt ? relativeTime(entry.latestSessionAt) : 'neu'}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="empty">
+            <div className="empty-icon"><Sparkles size={16} /></div>
+            <div className="empty-title">Noch keine Empfehlungen</div>
+            <div className="empty-description">Starte eine Tutor-Session, um die Wiedervorlage-Logik zu füttern.</div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// Tutor View
+// ============================================================
+
+function TutorView({
+  subject, topic, history, evidence, prompts, selectedContent,
+  promptIndex, answer, onPromptChange, onAnswerChange, onSubmit, saving,
+}: {
   subject: Subject
   topic: { title: string; status: ProgressState } | null
-  tutorHistory: TutorSessionEntry[]
-  allSessions: TutorSessionEntry[]
-  onSubmit: (answer: string, promptIndex: number) => void
+  history: TutorSessionEntry[]
+  evidence: EvidencePoint[]
+  prompts: string[]
+  selectedContent: { title: string; kind: ContentKind; groupTitle: string; source: string } | null
+  promptIndex: number
+  answer: string
+  onPromptChange: (i: number) => void
+  onAnswerChange: (s: string) => void
+  onSubmit: () => void
+  saving: boolean
 }) {
-  const [answer, setAnswer] = useState('')
-  const [promptIndex, setPromptIndex] = useState(0)
-
-  const prompts = useMemo(() => [
-    `Erkläre das Thema „${topic?.title ?? subject.title}“ in eigenen Worten, als würdest du es einem Kommilitonen kurz vor der Prüfung erklären.`,
-    `Welche typische Fehlentscheidung droht bei „${topic?.title ?? subject.title}“, wenn man nur auswendig gelernt hat?`,
-    `Nenne den nächsten Fall oder die nächste offene Frage, mit der wir „${topic?.title ?? subject.title}“ prüfungsnah abtesten sollten.`,
-  ], [topic, subject.title])
-
-  const evidence = useMemo(() => {
-    return tutorHistory.flatMap((entry) =>
-      buildEvidenceFromTutorSession({ answer: entry.answer, feedback: entry.feedback, prompt: entry.prompt, selectedContent: entry.selectedContent })
-    )
-  }, [tutorHistory])
-
   const assessment = useMemo(() => deriveAssessment(evidence), [evidence])
 
   if (!topic) {
     return (
-      <div className="content-container">
-        <div className="empty-state">
-          <div className="empty-state-icon">🎓</div>
-          <h3>Wähle ein Thema</h3>
-          <p>Gehe zu den Themen und wähle eines aus, um mit dem Tutor zu starten.</p>
+      <div className="content fade-in">
+        <div className="empty">
+          <div className="empty-icon"><GraduationCap size={16} /></div>
+          <div className="empty-title">Kein Thema gewählt</div>
+          <div className="empty-description">Geh zu „Themen" und wähle ein Thema aus, um eine Tutor-Session zu starten.</div>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="content-container animate-fade-in">
-      <div className="section-header">
-        <h2 className="section-title">🎓 Tutor: {topic.title}</h2>
-        <p className="section-description">Diagnostisch, evidenzbasiert und auf den nächsten Lernschritt ausgerichtet</p>
+    <div className="content-wide fade-in">
+      <div className="page-header">
+        <div className="page-eyebrow">{subject.title} · Tutor</div>
+        <h1 className="page-title">{topic.title}</h1>
+        <p className="page-description">Diagnostische Tutor-Session — beantworte einen Prompt und das System leitet daraus den nächsten Lernschritt ab.</p>
       </div>
 
-      <div className="grid-2">
-        <div className="tutor-panel">
-          <div className="tutor-header">
-            <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
-              <span className={`badge ${progressTone[assessment.state]}`}>{assessment.state}</span>
-              <span className="badge badge-muted">Confidence: {assessment.confidence}</span>
+      <div className="tutor-layout">
+        <div className="tutor-main">
+          <div>
+            <div className="section-head" style={{ marginBottom: 8 }}>
+              <h2 className="section-title">Wähle einen Prompt</h2>
             </div>
-            <div className="tutor-evidence-bar">
-              <span className="evidence-stat">📊 {evidence.length} Evidenzpunkte</span>
-              <span className="evidence-stat">💬 {tutorHistory.length} Antworten</span>
-            </div>
-          </div>
-
-          <div className="tutor-assessment">
-            <div className="assessment-column">
-              <h4>Stärken</h4>
-              <ul>
-                {assessment.strengths.length > 0 ? assessment.strengths.map((s, i) => <li key={i}>{s}</li>) : <li>Noch keine Stärken erhoben</li>}
-              </ul>
-            </div>
-            <div className="assessment-column">
-              <h4>Schwachstellen</h4>
-              <ul>
-                {assessment.weaknesses.length > 0 ? assessment.weaknesses.map((s, i) => <li key={i}>{s}</li>) : <li>Aktuell keine Schwächen dokumentiert</li>}
-              </ul>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {prompts.map((prompt, i) => (
+                <button key={i} className={`tutor-prompt-card ${promptIndex === i ? 'active' : ''}`} onClick={() => onPromptChange(i)}>
+                  <span className="tutor-prompt-num"><Target size={11} /> Prompt {String(i + 1).padStart(2, '0')}</span>
+                  <span className="tutor-prompt-text">{prompt}</span>
+                </button>
+              ))}
             </div>
           </div>
 
           <div>
-            <h4 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
-              Nächste Schritte
-            </h4>
-            <ul>
-              {assessment.nextActions.map((a, i) => <li key={i} style={{ padding: '8px 0', fontSize: '0.9rem', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-light)' }}>{a}</li>)}
-            </ul>
-          </div>
-        </div>
-
-        <div>
-          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: 16 }}>Wähle einen Prompt</h3>
-          {prompts.map((prompt, i) => (
-            <button
-              key={i}
-              className={`prompt-card ${promptIndex === i ? 'active' : ''}`}
-              onClick={() => setPromptIndex(i)}
-            >
-              <span className="prompt-number">Prompt {i + 1}</span>
-              <p className="prompt-text">{prompt}</p>
-            </button>
-          ))}
-
-          <div style={{ marginTop: 24 }}>
-            <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: 12 }}>Deine Antwort</h3>
+            <div className="section-head" style={{ marginBottom: 8 }}>
+              <h2 className="section-title">Deine Antwort</h2>
+              <span className="section-action">{answer.length} Zeichen</span>
+            </div>
             <textarea
               className="tutor-textarea"
               value={answer}
-              onChange={(e) => setAnswer(e.target.value)}
-              placeholder="Gib hier deine Antwort ein..."
+              onChange={(e) => onAnswerChange(e.target.value)}
+              placeholder="Erkläre das Thema in eigenen Worten — gerne mit Begründung, Begriffsschärfe und einem konkreten Fall."
             />
-            <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => { onSubmit(answer, promptIndex); setAnswer('') }}>
-              Antwort speichern
-            </button>
+            <div className="tutor-actions">
+              <span className="tutor-hint">Tipp: Begründe deine Aussagen („weil…") und nenne ein klinisches Szenario.</span>
+              <button className="btn btn-primary" onClick={onSubmit} disabled={saving || !answer.trim()}>
+                {saving ? 'Speichert…' : 'Antwort speichern'}
+              </button>
+            </div>
           </div>
+
+          {history.length > 0 && (
+            <div>
+              <div className="section-head" style={{ marginBottom: 8 }}>
+                <h2 className="section-title">Antwortverlauf</h2>
+                <span className="section-action">{history.length} Einträge</span>
+              </div>
+              <div>
+                {history.slice(0, 5).map((entry) => (
+                  <div key={entry.id} className="history-item">
+                    <div className="history-item-head">
+                      <span>{new Date(entry.savedAt).toLocaleString('de-DE')}</span>
+                      {entry.assessment && <span className={`badge ${progressTone[entry.assessment.state]}`}>{entry.assessment.state}</span>}
+                    </div>
+                    <div className="history-item-prompt">{entry.prompt}</div>
+                    <div className="history-item-answer">{entry.answer}</div>
+                    <div className="history-item-feedback">{entry.feedback}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="tutor-side">
+          <div className="assessment-panel">
+            <div className="assessment-head">
+              <span className="assessment-head-title">Status</span>
+              <span className={`badge ${progressTone[assessment.state]}`}>{assessment.state}</span>
+            </div>
+            <div className="evidence-stats">
+              <div className="evidence-stat">
+                <div className="evidence-stat-value">{evidence.length}</div>
+                <div className="evidence-stat-label">Evidenzpunkte</div>
+              </div>
+              <div className="evidence-stat">
+                <div className="evidence-stat-value">{history.length}</div>
+                <div className="evidence-stat-label">Antworten</div>
+              </div>
+              <div className="evidence-stat">
+                <div className="evidence-stat-value" style={{ fontSize: 13, paddingTop: 3 }}>{assessment.confidence}</div>
+                <div className="evidence-stat-label">Confidence</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="assessment-panel">
+            <div className="assessment-section">
+              <div className="assessment-section-label"><CheckCircle2 size={11} /> Stärken</div>
+              <div className="assessment-list">
+                {assessment.strengths.length > 0
+                  ? assessment.strengths.map((s, i) => <div key={i} className="assessment-item strength">{s}</div>)
+                  : <div className="assessment-empty">Noch keine Stärken erhoben</div>}
+              </div>
+            </div>
+            <div className="assessment-section">
+              <div className="assessment-section-label"><AlertCircle size={11} /> Schwachstellen</div>
+              <div className="assessment-list">
+                {assessment.weaknesses.length > 0
+                  ? assessment.weaknesses.map((s, i) => <div key={i} className="assessment-item weakness">{s}</div>)
+                  : <div className="assessment-empty">Aktuell keine Schwächen</div>}
+              </div>
+            </div>
+            <div className="assessment-section">
+              <div className="assessment-section-label"><ArrowRight size={11} /> Nächste Schritte</div>
+              <div className="assessment-list">
+                {assessment.nextActions.map((a, i) => <div key={i} className="assessment-item next">{a}</div>)}
+              </div>
+            </div>
+          </div>
+
+          {selectedContent && (
+            <div className="assessment-panel">
+              <div className="assessment-section-label"><FolderOpen size={11} /> Empfohlene Quelle</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                <KindIcon kind={selectedContent.kind} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{selectedContent.title}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{selectedContent.groupTitle} · {selectedContent.source}</div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
-
-      {tutorHistory.length > 0 && (
-        <div style={{ marginTop: 32 }}>
-          <h3 className="section-title">Antwortverlauf</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {tutorHistory.map((entry, i) => (
-              <div key={i} className="card">
-                <div style={{ display: 'flex', gap: 12, marginBottom: 8, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <span>{new Date(entry.savedAt).toLocaleString('de-DE')}</span>
-                  {entry.assessment && <span className={`badge ${progressTone[entry.assessment.state]}`}>{entry.assessment.state}</span>}
-                </div>
-                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: 8 }}><strong>Q:</strong> {entry.prompt}</p>
-                <p style={{ fontSize: '0.9rem', marginBottom: 8 }}><strong>A:</strong> {entry.answer}</p>
-                <p style={{ fontSize: '0.85rem', color: 'var(--accent-primary)' }}><strong>Feedback:</strong> {entry.feedback}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
 
-function LibraryView({ groups, kindFilter, onFilterChange }: {
-  groups: Subject['groups']
+// ============================================================
+// Library View
+// ============================================================
+
+function LibraryView({ subject, kindFilter, onFilterChange }: {
+  subject: Subject
   kindFilter: 'Alle' | ContentKind
   onFilterChange: (k: 'Alle' | ContentKind) => void
 }) {
   const visibleGroups = useMemo(() => {
-    if (kindFilter === 'Alle') return groups
-    return groups
+    if (kindFilter === 'Alle') return subject.groups
+    return subject.groups
       .map((g) => ({ ...g, items: g.items.filter((item) => item.kind === kindFilter) }))
       .filter((g) => g.items.length > 0)
-  }, [groups, kindFilter])
+  }, [subject.groups, kindFilter])
+
+  const totalItems = subject.groups.reduce((acc, g) => acc + g.items.length, 0)
+  const visibleItems = visibleGroups.reduce((acc, g) => acc + g.items.length, 0)
 
   return (
-    <div className="content-container animate-fade-in">
-      <div className="section-header">
-        <h2 className="section-title">📁 Content Library</h2>
-        <p className="section-description">Alle Lernmaterialien an einem Ort</p>
+    <div className="content-wide fade-in">
+      <div className="page-header">
+        <div className="page-eyebrow">{subject.title} · Bibliothek</div>
+        <h1 className="page-title">Inhalte</h1>
+        <p className="page-description">Alle Materialien dieses Fachs — gefiltert und gruppiert nach Themengebiet.</p>
+        <div className="page-meta">
+          <span className="text-tertiary text-mono" style={{ fontSize: 12 }}>{visibleItems} von {totalItems} Einträge</span>
+        </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
-        <button className={`btn btn-secondary ${kindFilter === 'Alle' ? 'active' : ''}`} onClick={() => onFilterChange('Alle')}>Alle</button>
+      <div className="filter-bar">
+        <button className={`filter-chip ${kindFilter === 'Alle' ? 'active' : ''}`} onClick={() => onFilterChange('Alle')}>Alle</button>
         {allKinds.map((k) => (
-          <button key={k} className={`btn btn-secondary ${kindFilter === k ? 'active' : ''}`} onClick={() => onFilterChange(k)}>{k}</button>
+          <button key={k} className={`filter-chip ${kindFilter === k ? 'active' : ''}`} onClick={() => onFilterChange(k)}>{k}</button>
         ))}
       </div>
 
-      {visibleGroups.map((group) => (
-        <div key={group.title} style={{ marginBottom: 32 }}>
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: 16 }}>{group.title}</h3>
-          <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: 16 }}>{group.summary}</p>
-          <div className="content-grid">
-            {group.items.map((item) => (
-              <div key={`${group.title}-${item.title}`} className="content-card">
-                <div className="content-card-header">
-                  <span className="content-card-title">{item.title}</span>
-                  <span className="badge badge-muted">{item.kind}</span>
+      {visibleGroups.length === 0 ? (
+        <div className="empty">
+          <div className="empty-icon"><FolderOpen size={16} /></div>
+          <div className="empty-title">Keine Inhalte für diesen Filter</div>
+          <div className="empty-description">Wechsle den Filter oder lade neue Materialien über „Upload" hoch.</div>
+        </div>
+      ) : (
+        visibleGroups.map((group) => (
+          <div key={group.title} className="library-group">
+            <div className="library-group-head">
+              <h3 className="library-group-title">{group.title}</h3>
+              <span className="library-group-count">{group.items.length}</span>
+            </div>
+            <p className="library-group-summary">{group.summary}</p>
+            <div className="content-grid">
+              {group.items.map((item) => (
+                <div key={`${group.title}-${item.title}-${item.kind}`} className="content-item">
+                  <div className="content-item-head">
+                    <span className="content-item-title">{item.title}</span>
+                    <KindIcon kind={item.kind} />
+                  </div>
+                  <span className="content-item-source">{item.source}</span>
+                  <p className="content-item-note">{item.note}</p>
                 </div>
-                <p className="content-card-meta">{item.source}</p>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 8 }}>{item.note}</p>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
-
-      {visibleGroups.length === 0 && (
-        <div className="empty-state">
-          <div className="empty-state-icon">📂</div>
-          <h3>Keine Inhalte</h3>
-          <p>Für diesen Filter gibt es noch keine Inhalte.</p>
-        </div>
+        ))
       )}
     </div>
   )
 }
 
-function UploadView({ subject, onUpload, onImport, importing }: {
-  subject: Subject
+// ============================================================
+// Upload View
+// ============================================================
+
+function UploadView({ subjects, selectedId, onSelectSubject, onUpload, uploading, message, onImport, importing }: {
+  subjects: Subject[]
+  selectedId: string
+  onSelectSubject: (id: string) => void
   onUpload: (form: FormData) => void
+  uploading: boolean
+  message: string
   onImport: (type: 'anaesthesie' | 'kardiologie') => void
   importing: { anaesthesie: boolean; kardiologie: boolean }
 }) {
-  const [form, setForm] = useState({ title: '', kind: 'PDF' as ContentKind, groupTitle: '', note: '', source: 'Manueller Upload', file: null as File | null })
+  const [form, setForm] = useState({
+    title: '', kind: 'PDF' as ContentKind, groupTitle: '', note: '',
+    source: 'Manueller Upload', file: null as File | null,
+  })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     const data = new FormData()
     data.append('title', form.title)
-    data.append('subjectId', subject.id)
+    data.append('subjectId', selectedId)
     data.append('groupTitle', form.groupTitle)
     data.append('kind', form.kind)
     data.append('source', form.source)
@@ -484,58 +710,90 @@ function UploadView({ subject, onUpload, onImport, importing }: {
   }
 
   return (
-    <div className="content-container animate-fade-in">
-      <div className="section-header">
-        <h2 className="section-title">⬆️ Upload & Import</h2>
-        <p className="section-description">Neue Inhalte hinzufügen</p>
+    <div className="content fade-in">
+      <div className="page-header">
+        <div className="page-eyebrow">Inhalte</div>
+        <h1 className="page-title">Upload &amp; Import</h1>
+        <p className="page-description">Lade neue Materialien hoch oder importiere lokale Korpora aus dem Workspace.</p>
       </div>
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 32 }}>
-        <button className="btn btn-secondary" onClick={() => onImport('anaesthesie')} disabled={importing.anaesthesie}>
-          {importing.anaesthesie ? 'Importiert...' : '📥 Anästhesie-Korpus'}
-        </button>
-        <button className="btn btn-secondary" onClick={() => onImport('kardiologie')} disabled={importing.kardiologie}>
-          {importing.kardiologie ? 'Importiert...' : '📥 Kardiologie-Korpus'}
-        </button>
+      {message && (
+        <div className={`banner ${message.startsWith('✓') ? 'banner-success' : message.startsWith('✗') ? 'banner-error' : 'banner-info'}`}>
+          {message}
+        </div>
+      )}
+
+      <div className="section" style={{ marginTop: 0 }}>
+        <div className="section-head">
+          <h2 className="section-title">Schnell-Import</h2>
+          <span className="section-action">Lokale Korpora aus dem Workspace</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary" onClick={() => onImport('anaesthesie')} disabled={importing.anaesthesie}>
+            <Upload size={13} /> {importing.anaesthesie ? 'Importiert…' : 'Anästhesie-Korpus'}
+          </button>
+          <button className="btn btn-secondary" onClick={() => onImport('kardiologie')} disabled={importing.kardiologie}>
+            <Upload size={13} /> {importing.kardiologie ? 'Importiert…' : 'Kardiologie-Korpus'}
+          </button>
+        </div>
       </div>
 
-      <div className="card">
-        <h3 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: 20 }}>Manueller Upload</h3>
-        <form onSubmit={handleSubmit}>
-          <div className="form-grid">
-            <div className="form-field">
-              <label>Titel</label>
-              <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="z.B. Vorlesung Herzinsuffizienz" required />
+      <div className="section">
+        <div className="section-head">
+          <h2 className="section-title">Manueller Upload</h2>
+        </div>
+        <div className="form-card">
+          <form onSubmit={handleSubmit}>
+            <div className="form-grid">
+              <div className="form-field">
+                <label className="form-label">Fach</label>
+                <select className="form-select" value={selectedId} onChange={(e) => onSelectSubject(e.target.value)}>
+                  {subjects.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+                </select>
+              </div>
+              <div className="form-field">
+                <label className="form-label">Typ</label>
+                <select className="form-select" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as ContentKind })}>
+                  {allKinds.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </div>
+              <div className="form-field">
+                <label className="form-label">Titel</label>
+                <input className="form-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="z.B. Vorlesung Herzinsuffizienz" required />
+              </div>
+              <div className="form-field">
+                <label className="form-label">Themengebiet</label>
+                <input className="form-input" value={form.groupTitle} onChange={(e) => setForm({ ...form, groupTitle: e.target.value })} placeholder="z.B. Atemweg & Einleitung" required />
+              </div>
+              <div className="form-field">
+                <label className="form-label">Quelle</label>
+                <input className="form-input" value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="z.B. Moodle Export" />
+              </div>
+              <div className="form-field">
+                <label className="form-label">Datei</label>
+                <input className="form-input" type="file" onChange={(e) => setForm({ ...form, file: e.target.files?.[0] ?? null })} />
+              </div>
+              <div className="form-field form-field-full">
+                <label className="form-label">Notiz</label>
+                <textarea className="form-textarea" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Optional: Verarbeitungsidee, Kontext, ToDos" />
+              </div>
             </div>
-            <div className="form-field">
-              <label>Typ</label>
-              <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as ContentKind })}>
-                {allKinds.map((k) => <option key={k} value={k}>{k}</option>)}
-              </select>
+            <div className="form-actions">
+              <span className="form-help">Datei wird unter data-store/uploads gespeichert.</span>
+              <button type="submit" className="btn btn-primary" disabled={uploading}>
+                {uploading ? 'Speichert…' : 'Upload speichern'}
+              </button>
             </div>
-            <div className="form-field">
-              <label>Themengebiet</label>
-              <input value={form.groupTitle} onChange={(e) => setForm({ ...form, groupTitle: e.target.value })} placeholder="z.B. Atemweg & Einleitung" required />
-            </div>
-            <div className="form-field">
-              <label>Quelle</label>
-              <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} placeholder="z.B. Moodle Export" />
-            </div>
-            <div className="form-field">
-              <label>Datei</label>
-              <input type="file" onChange={(e) => setForm({ ...form, file: e.target.files?.[0] ?? null })} />
-            </div>
-            <div className="form-field form-field-full">
-              <label>Notiz</label>
-              <textarea value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="Optional: Notizen oder Verarbeitungsideen" />
-            </div>
-          </div>
-          <button type="submit" className="btn btn-primary">Upload speichern</button>
-        </form>
+          </form>
+        </div>
       </div>
     </div>
   )
 }
+
+// ============================================================
+// Root App
+// ============================================================
 
 export default function App() {
   const [subjects, setSubjects] = useState(initialSubjects)
@@ -545,30 +803,62 @@ export default function App() {
   const [apiStatus, setApiStatus] = useState<'unknown' | 'online' | 'offline'>('unknown')
   const [tutorHistory, setTutorHistory] = useState<TutorSessionEntry[]>([])
   const [allTutorSessions, setAllTutorSessions] = useState<TutorSessionEntry[]>([])
+  const [tutorAnswer, setTutorAnswer] = useState('')
+  const [tutorPromptIndex, setTutorPromptIndex] = useState(0)
+  const [tutorSaving, setTutorSaving] = useState(false)
   const [kindFilter, setKindFilter] = useState<'Alle' | ContentKind>('Alle')
-  const [importing, setImporting] = useState({ anaesthesie: false, kardiologie: false })
+  const [uploading, setUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState('')
+  const [importing, setImporting] = useState({ anaesthesie: false, kardiologie: false })
 
   const selected = useMemo(() => subjects.find((s) => s.id === selectedId) ?? subjects[0], [selectedId, subjects])
-
-  const selectedTopic = useMemo(() =>
-    selected.topics.find((t) => t.title === selectedTopicTitle) ?? null,
-    [selected, selectedTopicTitle]
+  const selectedTopic = useMemo(
+    () => selected.topics.find((t) => t.title === selectedTopicTitle) ?? null,
+    [selected, selectedTopicTitle],
   )
 
-  const reviewQueue = useMemo(() => {
+  const availableContent = useMemo(
+    () => selected.groups.flatMap((group) => group.items.map((item) => ({ ...item, groupTitle: group.title }))),
+    [selected],
+  )
+
+  const recommendedContent = useMemo(() => {
+    if (!selectedTopic) return null
+    const rec = pickRecommendedContent(selectedTopic.title, availableContent)
+    return rec ? { title: rec.title, kind: rec.kind, groupTitle: rec.groupTitle, source: rec.source } : null
+  }, [selectedTopic, availableContent])
+
+  const tutorPrompts = useMemo(
+    () => buildTutorPrompts(selectedTopic?.title ?? selected.title),
+    [selectedTopic, selected.title],
+  )
+
+  const tutorEvidence = useMemo(() => {
+    return tutorHistory.flatMap((entry) =>
+      buildEvidenceFromTutorSession({
+        answer: entry.answer, feedback: entry.feedback, prompt: entry.prompt,
+        selectedContent: entry.selectedContent,
+      })
+    )
+  }, [tutorHistory])
+
+  const reviewQueue = useMemo<ReviewQueueEntry[]>(() => {
     const entries = subjects.flatMap((subject) =>
       subject.topics.map((topic) => {
         const sessions = allTutorSessions.filter((e) => e.subjectId === subject.id && e.topicTitle === topic.title)
-        const evidence = sessions.flatMap((e) => buildEvidenceFromTutorSession({ answer: e.answer, feedback: e.feedback, prompt: e.prompt, selectedContent: e.selectedContent }))
-        const content = subject.groups.flatMap((g) => g.items.map((item) => ({ ...item, groupTitle: g.title })))
+        const evidence = sessions.flatMap((e) =>
+          buildEvidenceFromTutorSession({
+            answer: e.answer, feedback: e.feedback, prompt: e.prompt, selectedContent: e.selectedContent,
+          }))
+        const candidates = subject.groups.flatMap((g) => g.items.map((item) => ({ ...item, groupTitle: g.title })))
+        const rec = pickRecommendedContent(topic.title, candidates)
         return {
           subjectId: subject.id,
           subjectTitle: subject.title,
           topicTitle: topic.title,
           evidence,
-          promptCandidates: [],
-          recommendedSource: pickRecommendedContent(topic.title, content)?.title ?? null,
+          promptCandidates: buildTutorPrompts(topic.title),
+          recommendedSource: rec ? `${rec.title} · ${rec.groupTitle}` : null,
           savedAnswerCount: sessions.length,
           latestSessionAt: sessions[0]?.savedAt ?? null,
         }
@@ -577,13 +867,14 @@ export default function App() {
     return buildReviewQueue(entries)
   }, [allTutorSessions, subjects])
 
+  // ----- API: Library -----
   async function loadLibrary() {
     try {
       const health = await fetch(`${API_BASE}/api/health`)
-      if (!health.ok) throw new Error('health check failed')
+      if (!health.ok) throw new Error('health failed')
       setApiStatus('online')
       const res = await fetch(`${API_BASE}/api/library`)
-      if (!res.ok) throw new Error('library load failed')
+      if (!res.ok) throw new Error('library failed')
       const data = await res.json()
       setSubjects(mergeUploadedItems(initialSubjects, data.items || []))
     } catch {
@@ -593,40 +884,51 @@ export default function App() {
 
   useEffect(() => { loadLibrary() }, [])
 
+  // ----- API: Tutor history -----
   useEffect(() => {
-    async function loadTutorHistory() {
-      if (!selectedTopic || apiStatus !== 'online') { setTutorHistory([]); setAllTutorSessions([]); return }
+    async function loadHistory() {
+      if (apiStatus !== 'online') { setTutorHistory([]); setAllTutorSessions([]); return }
       try {
-        const [topicRes, allRes] = await Promise.all([
-          fetch(`${API_BASE}/api/tutor-sessions?${new URLSearchParams({ subjectId: selected.id, topicTitle: selectedTopic.title })}`),
-          fetch(`${API_BASE}/api/tutor-sessions`),
-        ])
-        const topicData = await topicRes.json()
+        const allRes = await fetch(`${API_BASE}/api/tutor-sessions`)
         const allData = await allRes.json()
-        setTutorHistory(topicData.items || [])
         setAllTutorSessions(allData.items || [])
+        if (selectedTopic) {
+          const topicRes = await fetch(`${API_BASE}/api/tutor-sessions?${new URLSearchParams({ subjectId: selected.id, topicTitle: selectedTopic.title })}`)
+          const topicData = await topicRes.json()
+          setTutorHistory(topicData.items || [])
+        } else {
+          setTutorHistory([])
+        }
       } catch { setTutorHistory([]); setAllTutorSessions([]) }
     }
-    loadTutorHistory()
+    loadHistory()
   }, [apiStatus, selected.id, selectedTopic])
 
-  const handleNavigate = (newView: ViewType, subjectId?: string, topicTitle?: string) => {
+  // ----- Navigation -----
+  function navigate(newView: ViewType, subjectId?: string, topicTitle?: string) {
     if (subjectId) setSelectedId(subjectId)
     if (topicTitle) setSelectedTopicTitle(topicTitle)
     setView(newView)
+    setTutorAnswer('')
+    setTutorPromptIndex(0)
   }
 
-  const handleTutorSubmit = async (answer: string, promptIndex: number) => {
-    if (!answer.trim() || !selectedTopic) return
+  // ----- Tutor submit -----
+  async function handleTutorSubmit() {
+    if (!tutorAnswer.trim() || !selectedTopic) return
+    setTutorSaving(true)
     const entry: TutorSessionEntry = {
       id: `local-${Date.now()}`,
       savedAt: new Date().toISOString(),
       subjectId: selected.id,
       topicTitle: selectedTopic.title,
-      prompt: ['Erklärung', 'Fehler', 'Fall'][promptIndex],
-      answer,
-      feedback: 'Antwort gespeichert.',
-      assessment: { state: 'Erstkontakt', confidence: 'niedrig' },
+      prompt: tutorPrompts[tutorPromptIndex],
+      answer: tutorAnswer,
+      feedback: tutorAnswer.length < 80
+        ? 'Zu knapp — eine längere Erklärung mit Begründung wäre prüfungsnäher.'
+        : 'Solide. Nächster Schritt: noch mehr klinische Priorisierung & ein konkreter Fall.',
+      selectedContent: recommendedContent,
+      assessment: { state: tutorAnswer.length > 200 ? 'In Aufbau' : 'Erstkontakt', confidence: 'mittel' },
     }
     if (apiStatus === 'online') {
       try {
@@ -635,52 +937,123 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(entry),
         })
-        if (res.ok) { const data = await res.json(); entry.id = data.item?.id ?? entry.id }
-      } catch { /* offline fallback */ }
+        if (res.ok) {
+          const data = await res.json()
+          if (data.item?.id) entry.id = data.item.id
+        }
+      } catch { /* ignore */ }
     }
     setTutorHistory((prev) => [entry, ...prev])
     setAllTutorSessions((prev) => [entry, ...prev])
+    setTutorAnswer('')
+    setTutorSaving(false)
   }
 
-  const handleUpload = async (formData: FormData) => {
-    if (apiStatus !== 'online') { setUploadMessage('API offline'); return }
+  // ----- Upload -----
+  async function handleUpload(formData: FormData) {
+    if (apiStatus !== 'online') { setUploadMessage('✗ API offline — Upload nicht möglich.'); return }
+    setUploading(true)
     try {
       const res = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: formData })
       if (!res.ok) throw new Error('upload failed')
       const result = await res.json()
       setSubjects((prev) => mergeUploadedItems(prev, [result.item]))
-      setUploadMessage('Upload erfolgreich!')
-    } catch { setUploadMessage('Upload fehlgeschlagen.') }
+      setUploadMessage('✓ Upload gespeichert.')
+    } catch {
+      setUploadMessage('✗ Upload fehlgeschlagen.')
+    } finally {
+      setUploading(false)
+      setTimeout(() => setUploadMessage(''), 4000)
+    }
   }
 
-  const handleImport = async (type: 'anaesthesie' | 'kardiologie') => {
+  async function handleImport(type: 'anaesthesie' | 'kardiologie') {
     if (apiStatus !== 'online') return
     setImporting((prev) => ({ ...prev, [type]: true }))
     try {
       await fetch(`${API_BASE}/api/library/import-local/${type}`, { method: 'POST' })
       await loadLibrary()
-    } catch { /* ignore */ }
-    setImporting((prev) => ({ ...prev, [type]: false }))
+      setUploadMessage(`✓ ${type === 'anaesthesie' ? 'Anästhesie' : 'Kardiologie'}-Korpus importiert.`)
+    } catch {
+      setUploadMessage(`✗ Import fehlgeschlagen.`)
+    } finally {
+      setImporting((prev) => ({ ...prev, [type]: false }))
+      setTimeout(() => setUploadMessage(''), 4000)
+    }
   }
 
-  const viewTitles: Record<ViewType, string> = {
-    dashboard: 'Dashboard',
-    topics: `${selected.title} — Themen`,
-    tutor: selectedTopic ? `Tutor: ${selectedTopic.title}` : 'Tutor',
-    library: 'Content Library',
-    upload: 'Upload & Import',
-  }
+  // ----- Breadcrumbs -----
+  const crumbs = useMemo(() => {
+    if (view === 'dashboard') return [{ label: 'Dashboard', current: true }]
+    if (view === 'topics') return [{ label: selected.title }, { label: 'Themen', current: true }]
+    if (view === 'tutor') return [{ label: selected.title }, { label: 'Tutor' }, { label: selectedTopic?.title ?? 'Kein Thema', current: true }]
+    if (view === 'library') return [{ label: selected.title }, { label: 'Bibliothek', current: true }]
+    if (view === 'upload') return [{ label: 'Upload', current: true }]
+    return []
+  }, [view, selected, selectedTopic])
 
   return (
     <div className="app-layout">
-      <Sidebar subjects={subjects} selectedId={selectedId} onSelect={setSelectedId} view={view} onViewChange={handleNavigate} />
+      <Sidebar
+        subjects={subjects}
+        selectedId={selectedId}
+        view={view}
+        onSelectSubject={setSelectedId}
+        onViewChange={(v) => navigate(v)}
+      />
       <main className="main-content">
-        <Header apiStatus={apiStatus} title={viewTitles[view]} />
-        {view === 'dashboard' && <DashboardView subjects={subjects} reviewQueue={reviewQueue} onNavigate={handleNavigate} />}
-        {view === 'topics' && <TopicsView subject={selected} selectedTopic={selectedTopicTitle} onSelectTopic={setSelectedTopicTitle} />}
-        {view === 'tutor' && <TutorView subject={selected} topic={selectedTopic} tutorHistory={tutorHistory} allSessions={allTutorSessions} onSubmit={handleTutorSubmit} />}
-        {view === 'library' && <LibraryView groups={selected.groups} kindFilter={kindFilter} onFilterChange={setKindFilter} />}
-        {view === 'upload' && <UploadView subject={selected} onUpload={handleUpload} onImport={handleImport} importing={importing} />}
+        <Header crumbs={crumbs} apiStatus={apiStatus} />
+        {view === 'dashboard' && (
+          <DashboardView
+            subjects={subjects}
+            queue={reviewQueue}
+            sessions={allTutorSessions}
+            onOpen={navigate}
+          />
+        )}
+        {view === 'topics' && (
+          <TopicsView
+            subject={selected}
+            selectedTopicTitle={selectedTopicTitle ?? selected.topics[0]?.title ?? null}
+            onSelectTopic={setSelectedTopicTitle}
+            onOpenTutor={(title) => navigate('tutor', selected.id, title)}
+          />
+        )}
+        {view === 'tutor' && (
+          <TutorView
+            subject={selected}
+            topic={selectedTopic}
+            history={tutorHistory}
+            evidence={tutorEvidence}
+            prompts={tutorPrompts}
+            selectedContent={recommendedContent}
+            promptIndex={tutorPromptIndex}
+            answer={tutorAnswer}
+            onPromptChange={setTutorPromptIndex}
+            onAnswerChange={setTutorAnswer}
+            onSubmit={handleTutorSubmit}
+            saving={tutorSaving}
+          />
+        )}
+        {view === 'library' && (
+          <LibraryView
+            subject={selected}
+            kindFilter={kindFilter}
+            onFilterChange={setKindFilter}
+          />
+        )}
+        {view === 'upload' && (
+          <UploadView
+            subjects={subjects}
+            selectedId={selectedId}
+            onSelectSubject={setSelectedId}
+            onUpload={handleUpload}
+            uploading={uploading}
+            message={uploadMessage}
+            onImport={handleImport}
+            importing={importing}
+          />
+        )}
       </main>
     </div>
   )
